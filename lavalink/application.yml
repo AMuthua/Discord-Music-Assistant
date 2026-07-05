@@ -1,0 +1,21 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+
+lavalink:
+  server:
+    password: "ThisMustBeTheFinalBot"
+    sources:
+      youtube: false
+      bandcamp: true
+      soundcloud: true
+      http: true
+      local: false
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
+      snapshot: false
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
