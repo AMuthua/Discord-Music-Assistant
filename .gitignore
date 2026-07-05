@@ -4,3 +4,4 @@ music_data.db
 lavalink/application.yml
 lavalink/Lavalink.jar
 bot/
+/lavalink/spring.log
