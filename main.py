@@ -390,6 +390,5 @@ async def toggle_dj(ctx):
             player.autoplay = wavelink.AutoPlayMode.enabled
             await ctx.send("DJ Mode: ON")
 
-# --- Run the Bot ---
-# REPLACE 'YOUR_TOKEN_HERE' WITH YOUR ACTUAL TOKEN
+# Replace the token here, with the one got from Discord Developer Portal. 
 bot.run(TOKEN)
