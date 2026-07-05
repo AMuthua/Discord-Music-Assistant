@@ -7,7 +7,7 @@ A robust, self-hosted Discord music bot designed to function as a private "Radio
 *   **Auto-DJ Mode:** Built-in Wavelink Autoplay ensures the music never stops, even when your queue is empty.
 *   **Smart Status:** Automatically updates the bot's "Now Playing" status to keep listeners informed.
 *   **Weather Integration:** Need to know if it's a good day to go out? Built-in commands provide real-time weather and clothing advice.
-*   **Lightweight & Efficient:** Optimized to run as a systemd service on low-power hardware .
+*   **Lightweight & Efficient:** Optimized to run as a systemd service on low-power hardware.
 
 ## Tech Stack
 *   **Language:** Python 3.12
