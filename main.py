@@ -411,7 +411,7 @@ WEATHER_VIBES = [
     {"match": lambda t, c: "rain" in c or "drizzle" in c,
      "emoji": "🌧️", "line": "Grab an umbrella, it's coming down out there."},
     {"match": lambda t, c: "mist" in c or "fog" in c or "haze" in c,
-     "emoji": "🌫️", "line": "Visibility's low — take it easy if you're driving."},
+     "emoji": "🌫️", "line": "Visibility's low : take it easy if you're driving."},
 
     # Fallback to temperature bands
     {"match": lambda t, c: t <= 0,
@@ -439,12 +439,26 @@ TEMP_COLORS = [
 ]
 
 
-def get_weather_vibe(temp: float, condition_main: str):
-    """Return (emoji, flavor_line) for the current temp + condition."""
+def get_weather_vibe(temp: float, condition_main: str, icon: str):
+    """Return (emoji, flavor_line) for the current temp + condition, accounting for day/night."""
     condition = condition_main.lower()
     for vibe in WEATHER_VIBES:
         if vibe["match"](temp, condition):
-            return vibe["emoji"], vibe["line"]
+            emoji = vibe["emoji"]
+            line = vibe["line"]
+            
+            # --- NIGHT MODE TWEAK ---
+            # If the icon string contains 'n' (night) and the matched emoji is a sun, swap it!
+            if 'n' in icon:
+                if emoji == "☀️":
+                    emoji = "🌙"
+                    line = "Clear skies tonight, enjoy the stars."
+                elif emoji == "🌤️":
+                    emoji = "🌑"
+                    line = "A pleasant night out."
+            
+            return emoji, line
+            
     return "🌡️", "Weather's doing its thing out there."
 
 
@@ -493,7 +507,12 @@ async def weather(ctx, *, location: str):
     description = data["weather"][0]["description"]
     icon = data["weather"][0]["icon"]
 
-    emoji, flavor_line = get_weather_vibe(temp, condition_main)
+    # --- LOCAL TIME CALCULATION ---
+    tz_offset_seconds = data.get("timezone", 0)
+    local_dt = datetime.now(timezone.utc) + timedelta(seconds=tz_offset_seconds)
+    time_str = local_dt.strftime("%I:%M %p")
+
+    emoji, flavor_line = get_weather_vibe(temp, condition_main, icon)
     color = get_temp_color(temp)
 
     embed = discord.Embed(
@@ -502,6 +521,9 @@ async def weather(ctx, *, location: str):
         color=color,
     )
     embed.set_thumbnail(url=f"https://openweathermap.org/img/wn/{icon}@2x.png")
+
+    embed.add_field(name="Local Time", value=f"🕒 {time_str}", inline=False)
+
     embed.add_field(name="Temperature", value=f"{temp:.1f}°C", inline=True)
     embed.add_field(name="Feels Like", value=f"{feels_like:.1f}°C", inline=True)
     embed.add_field(name="Humidity", value=f"{humidity}%", inline=True)
