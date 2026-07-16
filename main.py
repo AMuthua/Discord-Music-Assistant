@@ -195,7 +195,7 @@ async def play(ctx, *, search: str):
             await ctx.send(embed=embed)
 
     if not player.playing:
-        await player.play(player.queue.get()
+        await player.play(player.queue.get())
 
 
 @bot.command()
