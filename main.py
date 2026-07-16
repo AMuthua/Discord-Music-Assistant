@@ -149,7 +149,6 @@ async def play(ctx, *, search: str):
         for row in rows:
             result = await wavelink.Playable.search(row[0])
             if result:
-                # If it's a playlist, add all tracks; otherwise, add the single track
                 if isinstance(result, wavelink.Playlist):
                     for track in result.tracks:
                         await player.queue.put_wait(track)
@@ -160,15 +159,31 @@ async def play(ctx, *, search: str):
         if not results:
             return await ctx.send("Not found.")
         
-        # Check if the search returned a full playlist
+        # --- PLAYLIST EMBED FIX ---
         if isinstance(results, wavelink.Playlist):
             for track in results.tracks:
                 await player.queue.put_wait(track)
-            await ctx.send(f"Added playlist: {results.name}")
+            
+            embed = discord.Embed(title="Playlist Added to Queue", color=discord.Color.green())
+            embed.add_field(name="Playlist", value=results.name, inline=False)
+            embed.add_field(name="Tracks Added", value=str(len(results.tracks)), inline=True)
+            embed.add_field(name="Requested by", value=ctx.author.display_name, inline=True)
+            await ctx.send(embed=embed)
+            
+        # --- SINGLE TRACK EMBED & TIME FIX ---
         else:
             track = results[0]
-            duration_ms = track.length
-            duration = f"{duration_ms // 60000}:{(duration_ms // 1000) % 60:02d}"
+            
+            # New Time Math (Handles Hours)
+            seconds = track.length // 1000
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            secs = seconds % 60
+            
+            if hours > 0:
+                duration = f"{hours}:{minutes:02d}:{secs:02d}"
+            else:
+                duration = f"{minutes}:{secs:02d}"
             
             embed = discord.Embed(title="Added to Queue", color=discord.Color.blue())
             embed.add_field(name="Track", value=f"[{track.title}]({track.uri}) by {track.author}", inline=False)
@@ -180,7 +195,7 @@ async def play(ctx, *, search: str):
             await ctx.send(embed=embed)
 
     if not player.playing:
-        await player.play(player.queue.get())
+        await player.play(player.queue.get()
 
 
 @bot.command()
@@ -188,21 +203,22 @@ async def nowplaying(ctx):
     player = ctx.voice_client
     if player and player.current:
         track = player.current
-        # Calculate duration
-        duration = f"{track.length // 60000}:{(track.length // 1000) % 60:02d}"
         
-        # Calculate current position in the queue
-        # We add 1 because the current track is effectively the "1st" track
-        current_pos = 1 
+        # --- NEW TIME MATH FOR NOW PLAYING ---
+        seconds = track.length // 1000
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        
+        if hours > 0:
+            duration = f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            duration = f"{minutes}:{secs:02d}"
         
         embed = discord.Embed(title="Now Playing", color=discord.Color.red())
-        
-        # Consistent link format: [Title](URL) by Artist
         track_display = f"[{track.title}]({track.uri})"
         embed.add_field(name="Track", value=f"{track_display} by {track.author}", inline=False)
         embed.add_field(name="Duration", value=duration, inline=True)
-        
-        # Add the progress if you want, or just leave it clean
         embed.set_footer(text="Use !play to add more tunes")
         
         await ctx.send(embed=embed)
