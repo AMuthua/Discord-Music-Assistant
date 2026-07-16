@@ -23,8 +23,13 @@ LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD")
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=discord.Intents.all())
+        self.web_session: aiohttp.ClientSession | None = None
 
     async def setup_hook(self):
+        # One shared HTTP session for the bot's lifetime (cheaper than
+        # opening a new one on every !weather call)
+        self.web_session = aiohttp.ClientSession()
+
         # Initialize Database
         async with aiosqlite.connect(DB_FILE) as db:
             await db.execute('''
@@ -42,6 +47,11 @@ class MyBot(commands.Bot):
             password=LAVALINK_PASSWORD
         )
         await wavelink.Pool.connect(client=self, nodes=[node])
+
+    async def close(self):
+        if self.web_session:
+            await self.web_session.close()
+        await super().close()
 
 
 bot = MyBot()
@@ -340,48 +350,121 @@ async def volume(ctx, vol: int):
         await ctx.send(f"Volume set to {vol}%")
 
 
-# --- This is the weather API Calls (60 calls per minute) ---
+# --- Weather API (60 calls per minute on the free tier) ---
+#
+# Instead of a chain of if/elif statements, the "mood" of a weather report
+# is decided by a small rules table (WEATHER_VIBES). Each rule is
+# (condition, emoji, line) and rules are checked top to bottom - first
+# match wins. Want to teach the bot about "windy" or "heatwave" days later?
+# Add one line to the table. No nested logic to untangle.
+
+WEATHER_VIBES = [
+    # High-priority conditions (storms, snow, rain) override plain temperature
+    {"match": lambda t, c: "thunderstorm" in c,
+     "emoji": "⛈️", "line": "Thunder's rolling in — maybe a stay-in, movie kind of day."},
+    {"match": lambda t, c: "snow" in c,
+     "emoji": "❄️", "line": "Snowing! Bundle up, it's a hot-chocolate kind of day."},
+    {"match": lambda t, c: "rain" in c or "drizzle" in c,
+     "emoji": "🌧️", "line": "Grab an umbrella, it's coming down out there."},
+    {"match": lambda t, c: "mist" in c or "fog" in c or "haze" in c,
+     "emoji": "🌫️", "line": "Visibility's low — take it easy if you're driving."},
+
+    # Fallback to temperature bands
+    {"match": lambda t, c: t <= 0,
+     "emoji": "🥶", "line": "Freezing! Layer up, this isn't a day to skip the coat."},
+    {"match": lambda t, c: t <= 10,
+     "emoji": "🧣", "line": "Chilly out — a jacket's a good call."},
+    {"match": lambda t, c: t <= 18,
+     "emoji": "🍂", "line": "Cool and comfortable, light layers should do it."},
+    {"match": lambda t, c: t <= 25,
+     "emoji": "🌤️", "line": "Pretty pleasant — a great day to be outside."},
+    {"match": lambda t, c: t <= 32,
+     "emoji": "☀️", "line": "Warm and sunny, stay hydrated!"},
+    {"match": lambda t, c: True,
+     "emoji": "🔥", "line": "Scorching! Seek shade and drink plenty of water."},
+]
+
+# Embed color drifts from icy blue to red as temperature climbs.
+TEMP_COLORS = [
+    (0,   discord.Color.from_rgb(150, 200, 255)),   # freezing
+    (10,  discord.Color.blue()),
+    (18,  discord.Color.teal()),
+    (25,  discord.Color.green()),
+    (32,  discord.Color.orange()),
+    (999, discord.Color.red()),
+]
+
+
+def get_weather_vibe(temp: float, condition_main: str):
+    """Return (emoji, flavor_line) for the current temp + condition."""
+    condition = condition_main.lower()
+    for vibe in WEATHER_VIBES:
+        if vibe["match"](temp, condition):
+            return vibe["emoji"], vibe["line"]
+    return "🌡️", "Weather's doing its thing out there."
+
+
+def get_temp_color(temp: float) -> discord.Color:
+    for threshold, color in TEMP_COLORS:
+        if temp <= threshold:
+            return color
+    return discord.Color.red()
+
 
 @bot.command()
 async def weather(ctx, *, location: str):
-    # 1. Geocode the location (Convert city name to lat/lon)
-    geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={location}&limit=1&appid={WEATHER_API_KEY}"
+    session = bot.web_session
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(geo_url) as resp:
-            geo_data = await resp.json()
+    # 1. Geocode the location (city name -> lat/lon)
+    geo_url = "http://api.openweathermap.org/geo/1.0/direct"
+    geo_params = {"q": location, "limit": 1, "appid": WEATHER_API_KEY}
 
-        if not geo_data:
-            return await ctx.send("I couldn't find that city.")
+    async with session.get(geo_url, params=geo_params) as resp:
+        if resp.status != 200:
+            return await ctx.send("Weather service is having a moment, try again shortly.")
+        geo_data = await resp.json()
 
-        lat = geo_data[0]['lat']
-        lon = geo_data[0]['lon']
-        city_name = geo_data[0]['name']
+    if not geo_data:
+        return await ctx.send(f"I couldn't find a place called **{location}**.")
 
-        # 2. Get the actual weather
-        weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric"
+    lat = geo_data[0]["lat"]
+    lon = geo_data[0]["lon"]
+    city_name = geo_data[0]["name"]
+    country = geo_data[0].get("country", "")
 
-        async with session.get(weather_url) as resp:
-            data = await resp.json()
+    # 2. Get current weather for those coordinates
+    weather_url = "https://api.openweathermap.org/data/2.5/weather"
+    weather_params = {"lat": lat, "lon": lon, "appid": WEATHER_API_KEY, "units": "metric"}
 
-        temp = data["main"]["temp"]
-        desc = data["weather"][0]["description"]
+    async with session.get(weather_url, params=weather_params) as resp:
+        if resp.status != 200:
+            return await ctx.send("Weather service is having a moment, try again shortly.")
+        data = await resp.json()
 
-        # 3. Simple clothing advice logic
-        advice = "It's a nice day out!"
-        if temp < 15:
-            advice = "It's chilly, you should have a pullover!"
-        elif temp > 28:
-            advice = "It's pretty hot, stay hydrated!"
+    temp = data["main"]["temp"]
+    feels_like = data["main"]["feels_like"]
+    humidity = data["main"]["humidity"]
+    wind_speed = data["wind"]["speed"]
+    condition_main = data["weather"][0]["main"]
+    description = data["weather"][0]["description"]
+    icon = data["weather"][0]["icon"]
 
-        if "rain" in desc.lower():
-            advice = "It's raining, don't forget your gumboots!"
+    emoji, flavor_line = get_weather_vibe(temp, condition_main)
+    color = get_temp_color(temp)
 
-        await ctx.send(
-            f"The weather in {location} is {temp} degrees Celsius\n"
-            f"{desc.capitalize()}\n"
-            f"{advice}"
-        )
+    embed = discord.Embed(
+        title=f"{emoji} Weather in {city_name}, {country}",
+        description=f"**{description.capitalize()}**\n{flavor_line}",
+        color=color,
+    )
+    embed.set_thumbnail(url=f"https://openweathermap.org/img/wn/{icon}@2x.png")
+    embed.add_field(name="Temperature", value=f"{temp:.1f}°C", inline=True)
+    embed.add_field(name="Feels Like", value=f"{feels_like:.1f}°C", inline=True)
+    embed.add_field(name="Humidity", value=f"{humidity}%", inline=True)
+    embed.add_field(name="Wind", value=f"{wind_speed} m/s", inline=True)
+    embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+
+    await ctx.send(embed=embed)
 
 
 @bot.command()
