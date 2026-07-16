@@ -6,6 +6,7 @@ import wavelink
 import aiosqlite
 import os
 import aiohttp
+from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 
@@ -222,6 +223,11 @@ SOURCE_STYLES = {
     "soundcloud": {"emoji": "🟠", "color": discord.Color.from_rgb(255, 119, 0)},
 }
 DEFAULT_SOURCE_STYLE = {"emoji": "🎵", "color": discord.Color.red()}
+
+@play.error
+async def play_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("⚠️ You forgot to tell me what to play! Try something like: `!play lofi beats` or paste a URL.")
 
 
 def format_duration(ms: int) -> str:
