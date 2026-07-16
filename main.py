@@ -227,7 +227,7 @@ DEFAULT_SOURCE_STYLE = {"emoji": "🎵", "color": discord.Color.red()}
 @play.error
 async def play_error(ctx, error):
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("⚠️ You forgot to tell me what to play! Try something like: `!play lofi beats` or paste a URL.")
+        await ctx.send("⚠️ You forgot to tell me what to play! Try something like: `!play lofi beats` or `!play paste a URL`.")
 
 
 def format_duration(ms: int) -> str:
@@ -516,7 +516,7 @@ async def weather(ctx, *, location: str):
     # --- LOCAL TIME CALCULATION ---
     tz_offset_seconds = data.get("timezone", 0)
     local_dt = datetime.now(timezone.utc) + timedelta(seconds=tz_offset_seconds)
-    time_str = local_dt.strftime("%A, %B %d %Y at %I:%M %p")
+    time_str = local_dt.strftime("%A, %B %d %Y at %I:%M %p") # Addition in time format, to showcase Day, Month, Date and the year.
 
     emoji, flavor_line = get_weather_vibe(temp, condition_main, icon)
     color = get_temp_color(temp)
