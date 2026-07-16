@@ -516,7 +516,7 @@ async def weather(ctx, *, location: str):
     # --- LOCAL TIME CALCULATION ---
     tz_offset_seconds = data.get("timezone", 0)
     local_dt = datetime.now(timezone.utc) + timedelta(seconds=tz_offset_seconds)
-    time_str = local_dt.strftime("%I:%M %p")
+    time_str = local_dt.strftime("%A, %B %d %Y at %I:%M %p")
 
     emoji, flavor_line = get_weather_vibe(temp, condition_main, icon)
     color = get_temp_color(temp)
