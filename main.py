@@ -136,6 +136,12 @@ async def show(ctx, playlist_name: str = None):
             await ctx.send(f"Songs in **{playlist_name}**:\n{songs}")
 
 
+def tag_requester(track: wavelink.Playable, ctx) -> wavelink.Playable:
+    """Stamp a track with who queued it, so it survives until nowplaying/queue reads it."""
+    track.extras = {"requester_id": ctx.author.id, "requester_name": ctx.author.display_name}
+    return track
+
+
 @bot.command()
 async def play(ctx, *, search: str):
     if not ctx.author.voice:
@@ -161,9 +167,9 @@ async def play(ctx, *, search: str):
             if result:
                 if isinstance(result, wavelink.Playlist):
                     for track in result.tracks:
-                        await player.queue.put_wait(track)
+                        await player.queue.put_wait(tag_requester(track, ctx))
                 else:
-                    await player.queue.put_wait(result[0])
+                    await player.queue.put_wait(tag_requester(result[0], ctx))
     else:
         results = await wavelink.Playable.search(search)
         if not results:
@@ -172,7 +178,7 @@ async def play(ctx, *, search: str):
         # --- PLAYLIST EMBED FIX ---
         if isinstance(results, wavelink.Playlist):
             for track in results.tracks:
-                await player.queue.put_wait(track)
+                await player.queue.put_wait(tag_requester(track, ctx))
             
             embed = discord.Embed(title="Playlist Added to Queue", color=discord.Color.green())
             embed.add_field(name="Playlist", value=results.name, inline=False)
@@ -201,39 +207,77 @@ async def play(ctx, *, search: str):
             embed.add_field(name="Duration", value=duration, inline=True)
             embed.add_field(name="Position", value=str(len(player.queue) + 1), inline=True)
             
-            await player.queue.put_wait(track)
+            await player.queue.put_wait(tag_requester(track, ctx))
             await ctx.send(embed=embed)
 
     if not player.playing:
         await player.play(player.queue.get())
 
 
+# Source badge: same "data table instead of if/elif" pattern as the weather
+# vibes. Add a new streaming source here and nowplaying picks it up for free.
+SOURCE_STYLES = {
+    "youtube":   {"emoji": "▶️", "color": discord.Color.from_rgb(255, 0, 0)},
+    "spotify":   {"emoji": "🟢", "color": discord.Color.from_rgb(30, 215, 96)},
+    "soundcloud": {"emoji": "🟠", "color": discord.Color.from_rgb(255, 119, 0)},
+}
+DEFAULT_SOURCE_STYLE = {"emoji": "🎵", "color": discord.Color.red()}
+
+
+def format_duration(ms: int) -> str:
+    seconds = ms // 1000
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def build_progress_bar(position_ms: int, length_ms: int, bar_length: int = 18) -> str:
+    if not length_ms:
+        return "▬" * bar_length
+    ratio = max(0.0, min(1.0, position_ms / length_ms))
+    filled = int(bar_length * ratio)
+    bar = "▬" * filled + "🔘" + "▬" * (bar_length - filled)
+    return bar
+
+
 @bot.command()
 async def nowplaying(ctx):
     player = ctx.voice_client
-    if player and player.current:
-        track = player.current
-        
-        # --- NEW TIME MATH FOR NOW PLAYING ---
-        seconds = track.length // 1000
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        secs = seconds % 60
-        
-        if hours > 0:
-            duration = f"{hours}:{minutes:02d}:{secs:02d}"
-        else:
-            duration = f"{minutes}:{secs:02d}"
-        
-        embed = discord.Embed(title="Now Playing", color=discord.Color.red())
-        track_display = f"[{track.title}]({track.uri})"
-        embed.add_field(name="Track", value=f"{track_display} by {track.author}", inline=False)
-        embed.add_field(name="Duration", value=duration, inline=True)
-        embed.set_footer(text="Use !play to add more tunes")
-        
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("Nothing is playing right now.")
+    if not (player and player.current):
+        return await ctx.send("Nothing is playing right now.")
+
+    track = player.current
+    style = SOURCE_STYLES.get(getattr(track, "source", ""), DEFAULT_SOURCE_STYLE)
+
+    elapsed = format_duration(player.position)
+    total = format_duration(track.length)
+    progress_bar = build_progress_bar(player.position, track.length)
+
+    # Requester was stamped on the track back in !play, if it's still there
+    requester_name = None
+    if track.extras:
+        requester_name = getattr(track.extras, "requester_name", None)
+
+    embed = discord.Embed(
+        title=f"{style['emoji']} Now Playing",
+        description=f"[{track.title}]({track.uri})\nby **{track.author}**",
+        color=style["color"],
+    )
+
+    artwork = getattr(track, "artwork", None)
+    if artwork:
+        embed.set_thumbnail(url=artwork)
+
+    embed.add_field(name="Progress", value=f"`{elapsed}` {progress_bar} `{total}`", inline=False)
+    if requester_name:
+        embed.add_field(name="Requested by", value=requester_name, inline=True)
+    embed.add_field(name="Status", value="⏸️ Paused" if player.paused else "▶️ Playing", inline=True)
+    embed.set_footer(text="Use !play to add more tunes")
+
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def rename_playlist(ctx, old_name: str, new_name: str):
@@ -361,7 +405,7 @@ async def volume(ctx, vol: int):
 WEATHER_VIBES = [
     # High-priority conditions (storms, snow, rain) override plain temperature
     {"match": lambda t, c: "thunderstorm" in c,
-     "emoji": "⛈️", "line": "Thunder's rolling in : maybe a stay-in, gaming kind of day."},
+     "emoji": "⛈️", "line": "Thunder's rolling in : maybe a stay-in, sip some tea."},
     {"match": lambda t, c: "snow" in c,
      "emoji": "❄️", "line": "Snowing! Bundle up, it's a hot-chocolate kind of day."},
     {"match": lambda t, c: "rain" in c or "drizzle" in c,
