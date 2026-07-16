@@ -361,7 +361,7 @@ async def volume(ctx, vol: int):
 WEATHER_VIBES = [
     # High-priority conditions (storms, snow, rain) override plain temperature
     {"match": lambda t, c: "thunderstorm" in c,
-     "emoji": "⛈️", "line": "Thunder's rolling in — maybe a stay-in, movie kind of day."},
+     "emoji": "⛈️", "line": "Thunder's rolling in : maybe a stay-in, gaming kind of day."},
     {"match": lambda t, c: "snow" in c,
      "emoji": "❄️", "line": "Snowing! Bundle up, it's a hot-chocolate kind of day."},
     {"match": lambda t, c: "rain" in c or "drizzle" in c,
@@ -373,11 +373,11 @@ WEATHER_VIBES = [
     {"match": lambda t, c: t <= 0,
      "emoji": "🥶", "line": "Freezing! Layer up, this isn't a day to skip the coat."},
     {"match": lambda t, c: t <= 10,
-     "emoji": "🧣", "line": "Chilly out — a jacket's a good call."},
+     "emoji": "🧣", "line": "Chilly out : a jacket's a good call."},
     {"match": lambda t, c: t <= 18,
      "emoji": "🍂", "line": "Cool and comfortable, light layers should do it."},
     {"match": lambda t, c: t <= 25,
-     "emoji": "🌤️", "line": "Pretty pleasant — a great day to be outside."},
+     "emoji": "🌤️", "line": "Pretty pleasant : a great day to be outside."},
     {"match": lambda t, c: t <= 32,
      "emoji": "☀️", "line": "Warm and sunny, stay hydrated!"},
     {"match": lambda t, c: True,
