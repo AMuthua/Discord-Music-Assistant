@@ -6,6 +6,7 @@ import wavelink
 import aiosqlite
 import os
 import aiohttp
+import re
 from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
@@ -133,8 +134,8 @@ async def show(ctx, playlist_name: str = None):
                 await ctx.send(f"Playlist '{playlist_name}' not found.")
                 return
 
-            songs = "\n".join([row[0] for row in rows])
-            await ctx.send(f"Songs in **{playlist_name}**:\n{songs}")
+            view = PlaylistView(playlist_name, rows, ctx.author)
+            await ctx.send(content=view.header(), embeds=view.build_embeds(), view=view)
 
 
 def tag_requester(track: wavelink.Playable, ctx) -> wavelink.Playable:
@@ -224,6 +225,132 @@ SOURCE_STYLES = {
 }
 DEFAULT_SOURCE_STYLE = {"emoji": "🎵", "color": discord.Color.red()}
 
+# Matches the video ID out of any common YouTube URL shape:
+# watch?v=, youtu.be/, shorts/, embed/
+YOUTUBE_ID_PATTERN = re.compile(
+    r"(?:youtube\.com/(?:watch\?v=|shorts/|embed/)|youtu\.be/)([\w-]{11})"
+)
+
+
+def extract_youtube_id(url: str) -> str | None:
+    match = YOUTUBE_ID_PATTERN.search(url)
+    return match.group(1) if match else None
+
+
+def get_platform_style(url: str) -> dict:
+    """Same idea as SOURCE_STYLES but keyed off a raw saved URL instead of a
+    resolved wavelink track, for use in !show before anything's been searched."""
+    lowered = url.lower()
+    if "spotify.com" in lowered:
+        return SOURCE_STYLES["spotify"]
+    if "soundcloud.com" in lowered:
+        return SOURCE_STYLES["soundcloud"]
+    if "youtube.com" in lowered or "youtu.be" in lowered:
+        return SOURCE_STYLES["youtube"]
+    return DEFAULT_SOURCE_STYLE
+
+
+class PlaylistView(discord.ui.View):
+    """Paginated browser for a saved playlist: Previous/Next flip through
+    10 tracks at a time, and the dropdown queues whichever track you pick -
+    so spotting song #15 on page 2 is one click away, not a separate command."""
+
+    PER_PAGE = 10
+
+    def __init__(self, playlist_name: str, rows: list, author: discord.abc.User):
+        super().__init__(timeout=180)
+        self.playlist_name = playlist_name
+        self.rows = rows
+        self.author = author
+        self.page = 0
+        self.max_page = max(0, (len(rows) - 1) // self.PER_PAGE)
+        self._sync_controls()
+
+    def _page_rows(self):
+        start = self.page * self.PER_PAGE
+        return self.rows[start:start + self.PER_PAGE], start
+
+    def _sync_controls(self):
+        self.previous_button.disabled = self.page == 0
+        self.next_button.disabled = self.page == self.max_page
+
+        page_rows, start = self._page_rows()
+        self.track_select.options = [
+            discord.SelectOption(label=f"Track {start + i + 1}", description=row[0][:100], value=str(start + i + 1))
+            for i, row in enumerate(page_rows)
+        ]
+
+    def header(self) -> str:
+        return f"Songs in **{self.playlist_name}** (page {self.page + 1}/{self.max_page + 1}):"
+
+    def build_embeds(self) -> list:
+        page_rows, start = self._page_rows()
+        embeds = []
+        for i, row in enumerate(page_rows, start=start + 1):
+            url = row[0]
+            style = get_platform_style(url)
+            embed = discord.Embed(title=f"{style['emoji']} Track {i}", url=url, description=url, color=style["color"])
+            video_id = extract_youtube_id(url)
+            if video_id:
+                embed.set_thumbnail(url=f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
+            embeds.append(embed)
+        return embeds
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("Only the person who ran `!show` can use these controls.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.select(placeholder="Pick a track to queue it...")
+    async def track_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        idx = int(select.values[0]) - 1
+        url = self.rows[idx][0]
+        await queue_track_for_interaction(interaction, url)
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page -= 1
+        self._sync_controls()
+        await interaction.response.edit_message(content=self.header(), embeds=self.build_embeds(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1
+        self._sync_controls()
+        await interaction.response.edit_message(content=self.header(), embeds=self.build_embeds(), view=self)
+
+
+async def queue_track_for_interaction(interaction: discord.Interaction, url: str):
+    """Queue a single saved-playlist URL from a button/select interaction
+    (mirrors the connect -> search -> tag -> queue flow in !play)."""
+    if not interaction.user.voice:
+        return await interaction.response.send_message("You need to be in a voice channel to queue a track.", ephemeral=True)
+
+    channel = interaction.user.voice.channel
+    player = interaction.guild.voice_client
+    if not player:
+        player = await channel.connect(cls=wavelink.Player, timeout=20.0)
+        player.autoplay = wavelink.AutoPlayMode.enabled
+
+    result = await wavelink.Playable.search(url)
+    if not result:
+        return await interaction.response.send_message("Couldn't find that track.", ephemeral=True)
+
+    track = result.tracks[0] if isinstance(result, wavelink.Playlist) else result[0]
+    track.extras = {"requester_id": interaction.user.id, "requester_name": interaction.user.display_name}
+    await player.queue.put_wait(track)
+
+    if not player.playing:
+        await player.play(player.queue.get())
+
+    await interaction.response.send_message(f"🎶 Queued **{track.title}**!", ephemeral=True)
+
+
 @play.error
 async def play_error(ctx, error):
     if isinstance(error, commands.MissingRequiredArgument):
@@ -247,6 +374,54 @@ def build_progress_bar(position_ms: int, length_ms: int, bar_length: int = 18) -
     filled = int(bar_length * ratio)
     bar = "▬" * filled + "🔘" + "▬" * (bar_length - filled)
     return bar
+
+
+class NowPlayingView(discord.ui.View):
+    """Playback controls attached to the nowplaying message: pause/resume
+    toggles in place, skip moves to the next track, stop disconnects."""
+
+    def __init__(self, player: wavelink.Player):
+        super().__init__(timeout=300)
+        self.player = player
+        self._sync_pause_button()
+
+    def _sync_pause_button(self):
+        if self.player.paused:
+            self.pause_button.label = "▶ Resume"
+            self.pause_button.style = discord.ButtonStyle.success
+        else:
+            self.pause_button.label = "⏸ Pause"
+            self.pause_button.style = discord.ButtonStyle.secondary
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only let people actually in the voice channel control playback
+        if not interaction.user.voice or interaction.user.voice.channel != self.player.channel:
+            await interaction.response.send_message("Join the voice channel to control playback.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="⏸ Pause", style=discord.ButtonStyle.secondary)
+    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.player.pause(not self.player.paused)
+        self._sync_pause_button()
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="⏭ Skip", style=discord.ButtonStyle.primary)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.player.skip()
+        await interaction.response.send_message("Skipped!", ephemeral=True)
+
+    @discord.ui.button(label="⏹ Stop", style=discord.ButtonStyle.danger)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.player.disconnect()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Disconnected!", view=self)
+        self.stop()
 
 
 @bot.command()
@@ -283,7 +458,7 @@ async def nowplaying(ctx):
     embed.add_field(name="Status", value="⏸️ Paused" if player.paused else "▶️ Playing", inline=True)
     embed.set_footer(text="Use !play to add more tunes")
 
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, view=NowPlayingView(player))
 
 @bot.command()
 async def rename_playlist(ctx, old_name: str, new_name: str):
