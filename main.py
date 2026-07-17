@@ -122,7 +122,7 @@ async def show(ctx, playlist_name: str = None):
                     await ctx.send("No playlists found in the database.")
                 else:
                     playlists = "\n".join([row[0] for row in rows])
-                    await ctx.send(f"Here are all the playlists on the server:\n{playlists}\n\nType !show <name> to see the tracks.")
+                    await ctx.send(f"Here are all the playlists on the server:\n{playlists}\n\nType `!show <playlist name>` to see the tracks.")
             return
 
         # If a name IS provided, show all tracks for that playlist (from
